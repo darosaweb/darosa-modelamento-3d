@@ -29,6 +29,10 @@ Você desenha a peça na vista de cima, acompanha o resultado numa prévia 3D e 
 
 ## Como usar
 
+**Online:** <https://darosaweb.github.io/darosa-modelamento-3d/>
+
+Para rodar localmente:
+
 É um único arquivo HTML. As bibliotecas (three.js, manifold-3d, opentype.js e as fontes) vêm por CDN, então é preciso ter internet.
 
 Sirva a pasta com qualquer servidor estático. Por exemplo:
