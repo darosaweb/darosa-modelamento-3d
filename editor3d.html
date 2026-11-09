@@ -353,7 +353,7 @@ function renderList() {
       : ({ rect: 'Retângulo', circle: 'Círculo', poly: 'Polígono' })[f.shape] + ' ' + (i + 1);
     const bb = bbox(f);
     const tam = (f.shape === 'circle' ? `Ø${r2(f.diam)}` : isBox(f) ? `${r2(f.w)}×${r2(f.d)}` : `${r2(bb.w)}×${r2(bb.d)}`)
-      + (f.rot ? ` ∠${r2(f.rot)}°` : '');
+      + (f.rot ? ` ∠${r2(f.rot)}°` : '') + (isTilted(f) ? ' ⟋' : '');
     const op = f.op === 'cut' ? `rebaixo ${r2(f.depth)}${f.ctop != null ? ` ↥${r2(f.ctop)}` : ''}` : `relevo ${r2(f.depth)}`;
     d.innerHTML = `<span class="dot" style="background:var(--${f.op})"></span><span class="nm"></span><span class="muted" style="margin-left:auto">${tam} · ${op}</span>`;
     d.querySelector('.nm').textContent = nome;
@@ -745,6 +745,7 @@ function renderProps() {
         ? numInput('X (âncora)', 'px') + numInput('Y (âncora)', 'py') + numInput('Largura', 'w', 0.5, 0.1) + numInput('Profundidade', 'd', 0.5, 0.1)
         : isPoly ? numInput('X (centro)', 'px') + numInput('Y (centro)', 'py') : numInput('X (centro)', 'x') + numInput('Y (centro)', 'y') + numInput('Diâmetro', 'diam', 0.5, 0.1)}
       ${f.shape !== 'circle' ? numInput('Ângulo (°)', 'rot', 1) : ''}
+      ${numInput('Inclinar p/ frente (°)', 'tx', 1)}${numInput('Inclinar p/ o lado (°)', 'ty', 1)}
       ${isRect || isText || isImg ? `<div class="ancbox"><div class="ancgrid">${Object.keys(ANC).map(k => `<button data-anc="${k}" class="${(f.anc || 'tl') === k ? 'on' : ''}" title="Âncora: ${ANC_NOME[k]}"></button>`).join('')}</div>
         <span>Ponto de ancoragem: <b>${ANC_NOME[f.anc || 'tl']}</b>.<br>X/Y se referem a ele, e o giro é em torno dele.</span></div>` : ''}
       ${numInput(f.op === 'cut' ? 'Fundo do rebaixo' : 'Altura do relevo', 'depth', 0.2, 0.1)}
@@ -823,13 +824,16 @@ function renderProps() {
 function updateDepthHint() {
   const f = selFeat(), h = $('depthHint');
   if (!f || !h) return;
-  if (f.op !== 'cut') { h.textContent = `Fica ${r2(f.depth)} mm acima do topo do bloco.`; return; }
+  const tiltTxt = isTilted(f)
+    ? ` Inclinada ${r2(tiltOf(f).tx)}° p/ frente e ${r2(tiltOf(f).ty)}° p/ o lado (em torno do ponto de ancoragem, no topo do bloco); a medida vale ao longo da inclinação.`
+    : '';
+  if (f.op !== 'cut') { h.textContent = `Fica ${r2(f.depth)} mm acima do topo do bloco.` + tiltTxt; return; }
   const H = state.base.h, fundo = Math.max(0, H - f.depth);
   let t = f.depth >= H ? 'Atravessa o bloco (furo passante).' : `Sobra ${r2(H - f.depth)} mm de material no fundo.`;
   if (f.ctop == null) t += ' Corta tudo acima do fundo, inclusive relevos.';
   else if (f.ctop <= fundo) t = `⚠ O topo do corte (${r2(f.ctop)} mm) está abaixo do fundo (${r2(fundo)} mm): o corte não faz nada.`;
   else t += ` Corta de ${r2(fundo)} até ${r2(f.ctop)} mm de altura (medido da mesa); o que estiver acima fica intacto.`;
-  h.textContent = t;
+  h.textContent = t + tiltTxt;
 }
 
 function select(id) {
@@ -972,7 +976,41 @@ function drawFeat(f, isSel, preview = false) {
 }
 
 // marcador do ponto de ancoragem: círculo com mira
+// ---------- Inclinação (em torno de eixos horizontais da própria forma) ----------
+const clampTilt = v => Math.max(-80, Math.min(80, +v || 0));
+const tiltOf = f => ({ tx: clampTilt(f.tx), ty: clampTilt(f.ty) });
+const isTilted = f => { const t = tiltOf(f); return !!(t.tx || t.ty); };
+// quanto o prisma precisa ser estendido para não deixar vão ao inclinar
+function tiltExtra(f) {
+  if (!isTilted(f)) return 0;
+  const t = tiltOf(f), a = Math.min(85, Math.abs(t.tx) + Math.abs(t.ty)), b = bbox(f);
+  return Math.hypot(b.w, b.d) * Math.tan(a * Math.PI / 180) + 2;
+}
+// gira o sólido em torno do ponto de ancoragem (na altura zp), nos eixos da forma
+function tiltSolid(f, solid, zp) {
+  const { tx, ty } = tiltOf(f);
+  const [px, py] = pivot(f), P = [px, state.base.d - py, zp], rz = f.rot || 0;
+  // +tx: o topo vai para a frente (para baixo na vista de cima); +ty: o topo vai para a direita
+  return solid.translate([-P[0], -P[1], -P[2]]).rotate([0, 0, -rz]).rotate([tx, 0, 0]).rotate([0, ty, 0]).rotate([0, 0, rz]).translate(P);
+}
+// seta na vista de cima indicando para onde a forma se inclina
+function drawTiltArrow(f, isSel) {
+  if (!isTilted(f)) return;
+  const { tx, ty } = tiltOf(f), [px, py] = pivot(f);
+  let [dx, dy] = rotVec(f.rot || 0, Math.tan(ty * Math.PI / 180), Math.tan(tx * Math.PI / 180));
+  const L = Math.hypot(dx, dy); if (L < 1e-6) return;
+  const len = 18 + Math.min(1, L) * 22; dx = dx / L * len; dy = dy / L * len;
+  const x0 = X(px), y0 = Y(py), x1 = x0 + dx, y1 = y0 + dy, a = Math.atan2(dy, dx);
+  ctx.save();
+  ctx.strokeStyle = ctx.fillStyle = isSel ? css('--sel') : css(f.op === 'cut' ? '--cut' : '--add');
+  ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x1 - 8 * Math.cos(a - 0.45), y1 - 8 * Math.sin(a - 0.45)); ctx.lineTo(x1 - 8 * Math.cos(a + 0.45), y1 - 8 * Math.sin(a + 0.45)); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
 function drawAnchor(f, isSel) {
+  drawTiltArrow(f, isSel);
   const [px, py] = pivot(f), x = X(px), y = Y(py);
   ctx.save();
   ctx.strokeStyle = isSel ? css('--sel') : css(f.op === 'cut' ? '--cut' : '--add');
@@ -1522,7 +1560,11 @@ function rebuild3d(refit) {
       if (!(f.depth > 0) || !validSize(f)) continue;
       const cs = featSection(f); if (!cs) continue;
       const ov = Math.min(0.3, h / 2); // sobreposição p/ fundir com o topo
-      res = res.add(prism(cs, h - ov, f.depth + ov));
+      const E = tiltExtra(f);
+      let sol = prism(cs, h - ov - E, f.depth + ov + E);
+      // inclinada: gira em torno da âncora no topo do bloco e corta o que ficaria abaixo do topo
+      if (E) sol = tiltSolid(f, sol, h).intersect(Manifold.cube([4000, 4000, 2000]).translate([-2000, -2000, h - ov]));
+      res = res.add(sol);
     } catch (err) { console.error(err); }
   }
   for (const f of state.feats.filter(f => f.op === 'cut')) {
@@ -1532,7 +1574,12 @@ function rebuild3d(refit) {
       const z1 = f.ctop != null ? Math.min(top, f.ctop) : top;
       if (z1 <= z0 + 1e-6) continue;
       const cs = featSection(f); if (!cs) continue;
-      res = res.subtract(prism(cs, z0, z1 - z0));
+      const E = tiltExtra(f);
+      // inclinado: estende as pontas (furo passante / sem topo) para atravessar tudo depois de girar
+      const a0 = E && z0 < 0 ? z0 - E : z0, a1 = E && f.ctop == null ? z1 + E : z1;
+      let sol = prism(cs, a0, a1 - a0);
+      if (E) sol = tiltSolid(f, sol, h);
+      res = res.subtract(sol);
     } catch (err) { console.error(err); }
   }
 
