@@ -136,6 +136,7 @@
   <p class="muted">Arraste na vista de cima para desenhar. No Polígono, clique ponto a ponto e feche clicando no 1º ponto (ou duplo clique / Enter). No Texto, clique onde quer o texto e digite no painel. Em Imagem, escolha um arquivo: as partes escuras viram a forma. Use “Mover” para arrastar formas. Delete apaga a selecionada.</p>
 
   <h2>Formas</h2>
+  <p class="muted" style="margin:-4px 0 6px">Aplicadas na ordem da lista: cada forma age sobre o resultado das de cima.</p>
   <div class="list" id="list"></div>
 
   <div id="props"></div>
@@ -166,6 +167,7 @@
 <div class="view" style="border-right:none">
   <div id="v3d" style="position:absolute;inset:0"></div>
   <span class="tag">Prévia 3D — arraste para girar, roda para zoom</span>
+  <span id="floatWarn" class="tag" style="display:none;left:auto;right:10px;color:#fff;background:var(--cut);border-color:var(--cut)"></span>
 </div>
 
 <script type="module">
@@ -240,6 +242,10 @@ function load() {
 function useProject(id) {
   lib.currentId = id;
   state = cur().state;
+  if (!state.ordem) { // versões antigas: relevos antes, rebaixos depois (mantém o mesmo resultado)
+    state.feats = [...state.feats.filter(f => f.op === 'add'), ...state.feats.filter(f => f.op !== 'add')];
+    state.ordem = 1;
+  }
   selBaseNode = null;
   nextId = Math.max(0, ...state.feats.map(f => f.id)) + 1;
   selId = null;
@@ -658,6 +664,7 @@ function rotPts(pts, deg, [px, py]) { return pts.map(([x, y]) => { const [dx, dy
 function getVal(f, k) {
   if (k === 'px' || k === 'py') return r2(pivot(f)[k === 'px' ? 0 : 1]);
   if (k === 'ctop') return f.ctop != null ? r2(f.ctop) : '';
+  if (k === 'zb') return f.zb != null ? r2(f.zb) : '';
   if (k === 'rot') return r2(f.rot || 0);
   return r2(f[k] ?? 0);
 }
@@ -749,6 +756,7 @@ function renderProps() {
       ${isRect || isText || isImg ? `<div class="ancbox"><div class="ancgrid">${Object.keys(ANC).map(k => `<button data-anc="${k}" class="${(f.anc || 'tl') === k ? 'on' : ''}" title="Âncora: ${ANC_NOME[k]}"></button>`).join('')}</div>
         <span>Ponto de ancoragem: <b>${ANC_NOME[f.anc || 'tl']}</b>.<br>X/Y se referem a ele, e o giro é em torno dele.</span></div>` : ''}
       ${numInput(f.op === 'cut' ? 'Fundo do rebaixo' : 'Altura do relevo', 'depth', 0.2, 0.1)}
+      ${f.op === 'add' ? `<label title="Altura, medida a partir da mesa, onde o relevo começa. Vazio = em cima do topo do bloco. 0 = apoiado na mesa.">Base do relevo (da mesa)<input type="number" data-k="zb" step="0.2" min="0" placeholder="topo do bloco"></label>` : ''}
       ${isRect ? numInput('Raio dos cantos', 'r', 0.5, 0) : ''}
       ${f.op === 'cut' ? `<label title="Altura, medida a partir da mesa, até onde o corte vai. Vazio = corta tudo o que estiver acima do fundo (inclusive relevos).">Topo do corte (da mesa)<input type="number" data-k="ctop" step="0.2" min="0" placeholder="até o topo"></label>` : ''}
       ${nodeEditor}
@@ -759,6 +767,8 @@ function renderProps() {
       ${isPoly || isText || isImg ? '' : '<button id="pPoly" title="Transforma em polígono para editar os nós">✎ Editar nós</button>'}
       <button id="pCx">Centralizar ↔</button>
       <button id="pCy">Centralizar ↕</button>
+      <button id="pUp" title="Aplicar antes (sobe na lista)">↑ Antes</button>
+      <button id="pDown" title="Aplicar depois (desce na lista)">↓ Depois</button>
       <button id="pDup">Duplicar</button>
       <button id="pDel" class="danger">Excluir</button>
     </div>`;
@@ -803,7 +813,7 @@ function renderProps() {
     el.value = k === 'op' ? f.op : getVal(f, k);
     el.oninput = () => {
       if (k === 'op') { f.op = el.value; changed(); renderProps(); return; }
-      if (k === 'ctop' && el.value.trim() === '') { delete f.ctop; changed(); updateDepthHint(); return; }
+      if ((k === 'ctop' || k === 'zb') && el.value.trim() === '') { delete f[k]; changed(); updateDepthHint(); return; }
       const v = parseFloat(el.value);
       if (!isFinite(v)) return;
       setVal(f, k, v);
@@ -814,6 +824,13 @@ function renderProps() {
   updateDepthHint();
   $('pCx').onclick = () => { const b = bbox(f); translateFeat(f, (state.base.w - b.w) / 2 - b.x, 0); changed(); renderProps(); };
   $('pCy').onclick = () => { const b = bbox(f); translateFeat(f, 0, (state.base.d - b.d) / 2 - b.y); changed(); renderProps(); };
+  const mv = dlt => {
+    const i = state.feats.indexOf(f), j = i + dlt;
+    if (j < 0 || j >= state.feats.length) return;
+    state.feats.splice(i, 1); state.feats.splice(j, 0, f);
+    changed(); renderProps();
+  };
+  $('pUp').onclick = () => mv(-1); $('pDown').onclick = () => mv(1);
   $('pDup').onclick = () => {
     const c = cloneFeat(f); c.id = nextId++;
     translateFeat(c, 5, 5);
@@ -827,7 +844,12 @@ function updateDepthHint() {
   const tiltTxt = isTilted(f)
     ? ` Inclinada ${r2(tiltOf(f).tx)}° p/ frente e ${r2(tiltOf(f).ty)}° p/ o lado (em torno do ponto de ancoragem, no topo do bloco); a medida vale ao longo da inclinação.`
     : '';
-  if (f.op !== 'cut') { h.textContent = `Fica ${r2(f.depth)} mm acima do topo do bloco.` + tiltTxt; return; }
+  if (f.op !== 'cut') {
+    h.textContent = (f.zb != null
+      ? `Vai de ${r2(f.zb)} até ${r2(f.zb + f.depth)} mm de altura (medido da mesa).` + (f.zb > state.base.h ? ' ⚠ Começa acima do bloco: só fica preso se houver algo embaixo.' : '')
+      : `Fica ${r2(f.depth)} mm acima do topo do bloco.`) + tiltTxt;
+    return;
+  }
   const H = state.base.h, fundo = Math.max(0, H - f.depth);
   let t = f.depth >= H ? 'Atravessa o bloco (furo passante).' : `Sobra ${r2(H - f.depth)} mm de material no fundo.`;
   if (f.ctop == null) t += ' Corta tudo acima do fundo, inclusive relevos.';
@@ -877,7 +899,8 @@ function refresh(baseChanged = false) {
   rebuildTimer = setTimeout(() => rebuild3d(baseChanged), 60);
 }
 
-function maxRelief() { return Math.max(0, ...state.feats.filter(f => f.op === 'add').map(f => f.depth)); }
+// altura do topo de cada relevo acima do topo do bloco
+function maxRelief() { const h = state.base.h; return Math.max(0, ...state.feats.filter(f => f.op === 'add').map(f => (f.zb ?? h) + f.depth - h)); }
 function bedCheck() {
   const { w, d, h } = state.base;
   const tot = h + maxRelief();
@@ -1555,20 +1578,20 @@ function rebuild3d(refit) {
     ? new CrossSection([state.base.pts.map(([x, y]) => [x, d - y])], 'NonZero')
     : rrect(0, 0, w, d, r);
   let res = prism(baseCs, 0, h);
-  for (const f of state.feats.filter(f => f.op === 'add')) {
-    try {
+  // aplica as formas na ordem da lista
+  for (const f of state.feats) {
+    if (f.op === 'add') try {
       if (!(f.depth > 0) || !validSize(f)) continue;
       const cs = featSection(f); if (!cs) continue;
-      const ov = Math.min(0.3, h / 2); // sobreposição p/ fundir com o topo
+      const zb = f.zb != null ? Math.max(0, f.zb) : h; // base do relevo
+      const ov = f.zb != null ? 0 : Math.min(0.3, h / 2); // sobreposição p/ fundir com o topo
       const E = tiltExtra(f);
-      let sol = prism(cs, h - ov - E, f.depth + ov + E);
-      // inclinada: gira em torno da âncora no topo do bloco e corta o que ficaria abaixo do topo
-      if (E) sol = tiltSolid(f, sol, h).intersect(Manifold.cube([4000, 4000, 2000]).translate([-2000, -2000, h - ov]));
+      let sol = prism(cs, zb - ov - E, f.depth + ov + E);
+      // inclinada: gira em torno da âncora na base e corta o que ficaria abaixo da base
+      if (E) sol = tiltSolid(f, sol, zb).intersect(Manifold.cube([4000, 4000, 2000]).translate([-2000, -2000, zb - ov]));
       res = res.add(sol);
     } catch (err) { console.error(err); }
-  }
-  for (const f of state.feats.filter(f => f.op === 'cut')) {
-    try {
+    if (f.op === 'cut') try {
       if (!(f.depth > 0) || !validSize(f)) continue;
       const z0 = f.depth >= h - 1e-6 ? -1 : h - f.depth;
       const z1 = f.ctop != null ? Math.min(top, f.ctop) : top;
@@ -1582,6 +1605,15 @@ function rebuild3d(refit) {
       res = res.subtract(sol);
     } catch (err) { console.error(err); }
   }
+  // partes soltas que não encostam na mesa não imprimem
+  try {
+    const parts = res.decompose();
+    const floating = parts.filter(m => m.boundingBox().min[2] > 0.01).length;
+    parts.forEach(m => m.delete && m.delete());
+    const fw = $('floatWarn');
+    fw.style.display = floating ? '' : 'none';
+    fw.textContent = floating ? `⚠ ${floating} parte${floating > 1 ? 's' : ''} flutuando (não ${floating > 1 ? 'vão' : 'vai'} imprimir)` : '';
+  } catch (err) { console.error(err); }
 
   const m = res.getMesh();
   modelData = { pos: m.vertProperties, tri: m.triVerts, numProp: m.numProp };
